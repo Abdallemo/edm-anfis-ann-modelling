@@ -276,7 +276,9 @@ class PredictorApp:
             self.lbl_csv.config(text=filename)
             self.ent_model_name.delete(0, tk.END)
 
-            self.ent_model_name.insert(0, f"{Path(self.csv_path).stem}_model")
+            self.ent_model_name.insert(
+                0, f"{Path(self.csv_path).stem.replace('-', '_')}_model"
+            )
 
     def start_build_thread(self):
         if not self.csv_path:

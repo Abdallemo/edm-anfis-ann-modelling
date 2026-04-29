@@ -14,7 +14,7 @@ Data Context:
 
 import itertools
 import os
-from typing import Literal, Self, Union
+from typing import Literal, Self, TypedDict, Union
 
 import joblib
 import matplotlib
@@ -28,6 +28,12 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import KFold, LeaveOneOut
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
+
+
+class ModelState(TypedDict):
+    model: MLPRegressor
+    scaler: StandardScaler
+    features: list[str]
 
 
 class NeuralNetwork:
@@ -119,10 +125,10 @@ class NeuralNetwork:
     def save(self, filepath: str) -> None:
         """Saves both the model and the scaler into a single file."""
         try:
-            state = {
+            state: ModelState = {
                 "model": self.model,
                 "scaler": self.scaler,
-                "features": getattr(self, "feature_names", None),
+                "features": getattr(self, "feature_names", []),
             }
             joblib.dump(state, filepath)
 
@@ -142,14 +148,15 @@ class NeuralNetwork:
         must contain the 'model' and 'scaler' keys or a KeyError will be raised.
         """
         try:
-            state = joblib.load(filepath)
+            state: ModelState = joblib.load(filepath)
 
-            if "model" not in state or "scaler" not in state:
+            if "model" not in state or "scaler" not in state or "features" not in state:
                 raise KeyError(
                     "The loaded file is missing the 'model' or 'scaler' state."
                 )
 
             network = cls()
+
             network.model = state["model"]
             network.scaler = state["scaler"]
             network.feature_names = state.get("features", [])
@@ -178,7 +185,10 @@ def evaluate(prediction: list[float], y_true):
     return rmse, mae, r2
 
 
-ParamGrid = dict[str, Union[list[tuple[int, ...]], list[str], list[float]]]
+class ParamGrid(TypedDict):
+    hidden_layers: list[tuple[int, ...]]
+    activation: list[Literal["relu", "logistic", "tanh"]]
+    alpha: list[float]
 
 
 class ExperimentRunner:
@@ -213,7 +223,7 @@ class ExperimentRunner:
 
     def grid_search(
         self,
-        param_grid: dict[str, Union[list[tuple[int, ...]], list[str], list[float]]],
+        param_grid: ParamGrid,
         split: Literal["loocv", "kfold"] = "loocv",
     ):
         """
