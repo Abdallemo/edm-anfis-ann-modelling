@@ -7,7 +7,7 @@ from joblib import Parallel, delayed
 
 from ._model import NeuralNetwork
 from .metrics import evaluate
-from .types import ActivationType, ParamGrid
+from .types import ActivationType, ParamConfig, ParamGrid
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -45,6 +45,8 @@ class ExperimentRunner:
         self.loo = LeaveOneOut()
         self.best_predictions = []
         self.best_actuals = []
+        self.best_result: ParamConfig | None = None
+        self.best_metrics: tuple[float, float, float] | None = None
 
     def grid_search(
         self,
@@ -61,15 +63,17 @@ class ExperimentRunner:
         reporting 'lucky' split results.
         """
         best_r2 = -float("inf")
-        best_params = {}
-        best_metrics = np.zeros(3)
+        best_params: ParamConfig | None = None
+        best_metrics: tuple[float, float, float] | None = None
 
         keys, values = zip(*param_grid.items())
-        combinations = [dict(zip(keys, v)) for v in itertools.product(*values)]
+        combinations = [
+            cast(ParamConfig, dict(zip(keys, v))) for v in itertools.product(*values)
+        ]
 
         print(f"Starting Grid Search: Testing {len(combinations)} combinations...\n")
 
-        def evaluate_combination(params):
+        def evaluate_combination(params: ParamConfig):
             if split == "loocv":
                 metrics, preds, acts = self.run_loocv(
                     hidden_layers=params["hidden_layers"],
@@ -90,7 +94,7 @@ class ExperimentRunner:
         for raw_result in parallel_executor(tasks):
             params, (rmse, mae, r2), preds, acts = cast(
                 tuple[
-                    dict[str, Any], tuple[float, float, float], list[float], list[float]
+                    ParamConfig, tuple[float, float, float], list[float], list[float]
                 ],
                 raw_result,
             )
@@ -101,16 +105,20 @@ class ExperimentRunner:
                 best_r2 = r2
                 best_params = params
                 best_metrics = (rmse, mae, r2)
+
+                self.best_result = params
+                self.best_metrics = best_metrics
                 self.best_predictions = preds
                 self.best_actuals = acts
 
         print("\n" + "=" * 40)
         print("BEST ARCHITECTURE FOUND ")
         print("=" * 40)
-        print(f"Parameters: {best_params}")
-        print(f"Overall RMSE: {best_metrics[0]:.4f}")
-        print(f"Overall MAE:  {best_metrics[1]:.4f}")
-        print(f"Overall R2:   {best_metrics[2]:.4f}")
+        if best_metrics is not None:
+            print(f"Parameters: {best_params}")
+            print(f"Overall RMSE: {best_metrics[0]:.4f}")
+            print(f"Overall MAE:  {best_metrics[1]:.4f}")
+            print(f"Overall R2:   {best_metrics[2]:.4f}")
 
         return best_params, best_metrics
 
@@ -199,21 +207,18 @@ class ExperimentRunner:
         print(f"Plot saved to: {filepath}")
 
     def save_results_csv(self, filepath: str):
-        """
-        Exports simulation raw data to a CSV formatted for Microsoft Excel.
-
-        Reporting Note:
-        Appends 'Absolute_Error' and 'Squared_Error' columns automatically.
-        Essential for auditing the model performance against specific
-        machining runs.
-        """
-        if not self.best_predictions or not self.best_actuals:
+        if (
+            not self.best_predictions
+            or not self.best_actuals
+            or not self.best_result
+            or not self.best_metrics
+        ):
             print("Error: No results found to save. Run grid_search first.")
             return
 
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
 
-        results_df = pd.DataFrame(
+        df = pd.DataFrame(
             {
                 "Observation": range(1, len(self.best_actuals) + 1),
                 "Actual": self.best_actuals,
@@ -221,12 +226,45 @@ class ExperimentRunner:
             }
         )
 
-        results_df["Absolute_Error"] = (
-            results_df["Actual"] - results_df["Predicted"]
-        ).abs()
-        results_df["Squared_Error"] = (
-            results_df["Actual"] - results_df["Predicted"]
-        ) ** 2
+        df["Absolute_Error"] = (df["Actual"] - df["Predicted"]).abs()
+        df["Squared_Error"] = (df["Actual"] - df["Predicted"]) ** 2
 
-        results_df.to_csv(filepath, index=False)
-        print(f"CSV results saved to: {filepath}")
+        df.to_csv(filepath, index=False)
+
+        summary_data = [
+            ["hidden_layers", str(self.best_result["hidden_layers"])],
+            ["activation", self.best_result["activation"]],
+            ["alpha", self.best_result["alpha"]],
+            ["avg_rmse", self.best_metrics[0]],
+            ["avg_mae", self.best_metrics[1]],
+            ["r2", self.best_metrics[2]],
+        ]
+
+        summary_df = pd.DataFrame(summary_data, columns=["Metric", "Value"])
+
+        with open(filepath, "a"):
+            pass
+
+        with pd.ExcelWriter(filepath, engine="xlsxwriter") as writer:
+            df.to_excel(writer, index=False, sheet_name="Results")
+
+            summary_df.to_excel(
+                writer,
+                index=False,
+                startcol=7,
+                sheet_name="Results",
+            )
+
+            workbook = writer.book
+            worksheet = writer.sheets["Results"]
+
+            for i in range(len(df.columns)):
+                worksheet.set_column(i, i, 18)
+
+            worksheet.set_column(7, 8, 20)
+
+            bold = workbook.add_format({"bold": True})
+            worksheet.write(0, 7, "Metric", bold)
+            worksheet.write(0, 8, "Value", bold)
+
+        print(f"Results saved to: {filepath}")

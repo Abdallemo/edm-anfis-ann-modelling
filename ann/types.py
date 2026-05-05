@@ -18,3 +18,9 @@ class ParamGrid(TypedDict):
     activation: list[ActivationType]
     """allowed Activation functions (‘logistic’, ‘tanh’, ‘relu’)."""
     alpha: list[float]
+
+
+class ParamConfig(TypedDict):
+    hidden_layers: tuple[int, ...]
+    activation: ActivationType
+    alpha: float

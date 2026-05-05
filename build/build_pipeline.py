@@ -60,14 +60,20 @@ def build_and_save_model(csv_path: str, model_name: str, dataset_type: DatasetTy
     y = cast(pd.Series, df[target_col])
 
     runner = ExperimentRunner(X, y)
-    best_params, best_results = runner.grid_search(grid, split="loocv")
+    best_params, _ = runner.grid_search(grid, split="loocv")
     print(best_params)
     runner.save_plot(
         f"results/{model_name}_plot.png", title=f"{model_name}: Actual vs Predicted"
     )
-    runner.save_results_csv(f"results/{model_name}_results.csv")
+    runner.save_results_csv(f"results/{model_name}_results.xlsx")
+    if best_params is None:
+        raise RuntimeError("No best parameters found. Run grid_search first.")
 
-    final_model = NeuralNetwork(**best_params)
+    final_model = NeuralNetwork(
+        hidden_layers=best_params["hidden_layers"],
+        activation=best_params["activation"],
+        alpha=best_params["alpha"],
+    )
     final_model.fit(X, y)
     final_model.save(f"models/{model_name}.pkl")
     print(f"Successfully built and saved {model_name}!")
