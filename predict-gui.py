@@ -1,190 +1,239 @@
 import os
-import queue
 import sys
-import threading
-import tkinter as tk
 import traceback
 from pathlib import Path
-from tkinter import filedialog, font, messagebox, scrolledtext, ttk
 
 import pandas as pd
+from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtGui import QFont, QTextCursor
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ann import NeuralNetwork
 from build.build_pipeline import build_and_save_model
 
 
-class TextRedirector:
-    """Safely drops stdout/stderr text into a thread-safe bucket (Queue)."""
+class StreamRedirector(QObject):
+    """Safely redirects stdout/stderr to a Qt Signal."""
 
-    def __init__(self, text_queue: queue.Queue):
-        self.text_queue = text_queue
+    text_written = Signal(str)
 
     def write(self, text):
-
-        self.text_queue.put(text)
+        self.text_written.emit(text)
 
     def flush(self):
         pass
 
-    def isatty(self):
-        return False
+
+class BuildWorker(QThread):
+    """Background thread for training the model without freezing the GUI."""
+
+    success = Signal(str)
+    error = Signal(str)
+
+    def __init__(self, csv_path, model_name, dataset_type, redirector):
+        super().__init__()
+        self.csv_path = csv_path
+        self.model_name = model_name
+        self.dataset_type = dataset_type
+        self.redirector = redirector
+
+    def run(self):
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+
+        sys.stdout = self.redirector
+        sys.stderr = self.redirector
+
+        try:
+            build_and_save_model(
+                csv_path=self.csv_path,
+                model_name=self.model_name,
+                dataset_type=self.dataset_type,
+            )
+            print("\nTraining Complete!")
+            self.success.emit(self.model_name)
+        except Exception as e:
+            print(f"\n❌ ERROR during training:\n{traceback.format_exc()}")
+            self.error.emit(str(e))
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
 
 
-class PredictorApp:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("Surface Roughness")
-        self.root.geometry("600x650")
+class PredictorApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Surface Roughness Predictor & Builder")
+        self.resize(650, 700)
 
         self.model = None
         self.entries = {}
         self.current_folder = ""
+        self.csv_path = ""
 
-        self.console_queue = queue.Queue()
-        self.poll_console_queue()
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
 
-        self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
 
-        self.predict_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.predict_frame, text="Predictor")
         self.setup_predict_tab()
-
-        self.build_frame = ttk.Frame(self.notebook)
-        self.notebook.add(self.build_frame, text="Model Builder")
         self.setup_build_tab()
 
-    def poll_console_queue(self):
-        processed = False
-        max_per_tick = 10
-
-        for _ in range(max_per_tick):
-            if self.console_queue.empty():
-                break
-
-            processed = True
-            text = self.console_queue.get()
-
-            if text == "<<TRAINING_COMPLETE>>":
-                self.btn_build.config(state="normal", text="Start Training")
-                if self.current_folder:
-                    self.load_pkl_list(self.current_folder)
-
-            elif text == "<<TRAINING_SUCCESS>>":
-                self.show_success_popup()
-
-            elif text == "<<TRAINING_ERROR>>":
-                self.show_error_popup()
-
-            else:
-                self.console_text.insert(tk.END, text)
-
-        if processed:
-            self.console_text.see(tk.END)
-
-        delay = 20 if processed else 150
-        self.root.after(delay, self.poll_console_queue)
-
     def setup_predict_tab(self):
-        self.btn_folder = ttk.Button(
-            self.predict_frame, text="Select Models Folder", command=self.select_folder
-        )
-        self.btn_folder.pack(pady=(15, 5))
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
 
-        self.lbl_folder_path = ttk.Label(
-            self.predict_frame, text="No folder selected", foreground="gray"
-        )
-        self.lbl_folder_path.pack(pady=2)
+        self.btn_folder = QPushButton("Select Models Folder")
+        self.btn_folder.clicked.connect(self.select_folder)
+        layout.addWidget(self.btn_folder)
 
-        self.model_combobox = ttk.Combobox(
-            self.predict_frame, state="readonly", width=40
-        )
-        self.model_combobox.pack(pady=10)
-        self.model_combobox.set("Select a model...")
-        self.model_combobox.bind("<<ComboboxSelected>>", self.on_model_select)
+        self.lbl_folder_path = QLabel("No folder selected")
+        self.lbl_folder_path.setStyleSheet("color: gray;")
+        layout.addWidget(self.lbl_folder_path)
 
-        self.input_frame = ttk.LabelFrame(self.predict_frame, text="Machine Settings")
-        self.input_frame.pack(pady=10, padx=20, fill="both", expand=True)
+        self.model_combobox = QComboBox()
+        self.model_combobox.addItem("Select a model...")
+        self.model_combobox.currentTextChanged.connect(self.on_model_select)
+        layout.addWidget(self.model_combobox)
 
-        self.btn_predict = ttk.Button(
-            self.predict_frame,
-            text="Predict",
-            command=self.make_prediction,
-            state="disabled",
-        )
-        self.btn_predict.pack(pady=15)
+        self.input_group = QGroupBox("Machine Settings")
+        self.form_layout = QFormLayout(self.input_group)
+        layout.addWidget(self.input_group)
 
-        self.lbl_result = ttk.Label(
-            self.predict_frame,
-            text="",
-            font=("Helvetica", 14, "bold"),
-            foreground="blue",
+        self.btn_predict = QPushButton("Predict")
+        self.btn_predict.setEnabled(False)
+        self.btn_predict.clicked.connect(self.make_prediction)
+        layout.addWidget(self.btn_predict)
+
+        self.lbl_result = QLabel("")
+        self.lbl_result.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_result.setStyleSheet(
+            "color: #00aaff; font-size: 18px; font-weight: bold;"
         )
-        self.lbl_result.pack(pady=10)
+        layout.addWidget(self.lbl_result)
+
+        layout.addStretch()
+        self.tabs.addTab(tab, "Predictor")
+
+    def setup_build_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        csv_layout = QHBoxLayout()
+        self.lbl_csv = QLabel("No CSV Selected")
+        self.btn_csv = QPushButton("Browse CSV")
+        self.btn_csv.clicked.connect(self.select_csv)
+        csv_layout.addWidget(self.lbl_csv, stretch=1)
+        csv_layout.addWidget(self.btn_csv)
+        layout.addLayout(csv_layout)
+
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Dataset Type:"))
+        self.type_combobox = QComboBox()
+        self.type_combobox.addItems(["dataset1-type", "dataset2-type"])
+        type_layout.addWidget(self.type_combobox, stretch=1)
+        layout.addLayout(type_layout)
+
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Model Name:"))
+        self.ent_model_name = QLineEdit("my_new_model")
+        name_layout.addWidget(self.ent_model_name, stretch=1)
+        layout.addLayout(name_layout)
+
+        self.btn_build = QPushButton("Start Training")
+        self.btn_build.clicked.connect(self.start_build_thread)
+        layout.addWidget(self.btn_build)
+
+        layout.addWidget(QLabel("Training Output:"))
+        self.console_text = QTextEdit()
+        self.console_text.setReadOnly(True)
+        self.console_text.setStyleSheet("background-color: #1e1e1e; color: #4af626;")
+        self.console_text.setFont(QFont("Monospace", 10))
+        layout.addWidget(self.console_text, stretch=1)
+
+        self.tabs.addTab(tab, "Model Builder")
 
     def select_folder(self):
-        folder_path = filedialog.askdirectory(title="Select Models Folder")
+        folder_path = QFileDialog.getExistingDirectory(self, "Select Models Folder")
         if not folder_path:
             return
 
         self.current_folder = folder_path
-        self.lbl_folder_path.config(
-            text=f"Folder: {self.current_folder}", foreground="black"
-        )
+        self.lbl_folder_path.setText(f"Folder: {self.current_folder}")
+        self.lbl_folder_path.setStyleSheet("color: white;")
 
         self.load_pkl_list(folder_path)
-
         self.model = None
-        self.btn_predict.config(state="disabled")
-        for widget in self.input_frame.winfo_children():
-            widget.destroy()
+        self.btn_predict.setEnabled(False)
+        self.clear_form_layout()
 
-    def load_pkl_list(self, folder_path: str):
-
-        current_selection = self.model_combobox.get()
-
+    def load_pkl_list(self, folder_path):
+        current_selection = self.model_combobox.currentText()
         pkl_files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
 
+        self.model_combobox.blockSignals(True)
+        self.model_combobox.clear()
+
         if not pkl_files:
-            self.model_combobox["values"] = []
-            self.model_combobox.set("No models found")
-            return
-
-        self.model_combobox["values"] = pkl_files
-
-        if current_selection in pkl_files:
-            self.model_combobox.set(current_selection)
+            self.model_combobox.addItem("No models found")
         else:
-            self.model_combobox.set("Select a model...")
+            self.model_combobox.addItems(pkl_files)
+            if current_selection in pkl_files:
+                self.model_combobox.setCurrentText(current_selection)
+            else:
+                self.model_combobox.insertItem(0, "Select a model...")
+                self.model_combobox.setCurrentIndex(0)
 
-    def on_model_select(self, event):
-        selected_file = self.model_combobox.get()
-        if not selected_file or not self.current_folder:
+        self.model_combobox.blockSignals(False)
+
+    def on_model_select(self, selected_file):
+        if not selected_file or selected_file in [
+            "Select a model...",
+            "No models found",
+        ]:
             return
 
         filepath = os.path.join(self.current_folder, selected_file)
-
         try:
             self.model = NeuralNetwork.load(filepath)
             self.build_input_fields()
-            self.btn_predict.config(state="normal")
-            self.lbl_result.config(text="")
+            self.btn_predict.setEnabled(True)
+            self.lbl_result.setText("")
         except Exception as e:
-            messagebox.showerror("Error", f"Could not load the model:\n{e}")
+            QMessageBox.critical(self, "Error", f"Could not load the model:\n{e}")
+
+    def clear_form_layout(self):
+        while self.form_layout.rowCount() > 0:
+            self.form_layout.removeRow(0)
+        self.entries.clear()
 
     def build_input_fields(self):
         if not self.model:
             return
-        for widget in self.input_frame.winfo_children():
-            widget.destroy()
-        self.entries.clear()
 
-        for idx, feature in enumerate(self.model.feature_names):
-            lbl = ttk.Label(self.input_frame, text=f"{feature}:")
-            lbl.grid(row=idx, column=0, padx=10, pady=10, sticky="e")
+        self.clear_form_layout()
 
-            ent = ttk.Entry(self.input_frame, width=20)
-            ent.grid(row=idx, column=1, padx=10, pady=10, sticky="w")
+        for feature in self.model.feature_names:
+            ent = QLineEdit()
+            self.form_layout.addRow(f"{feature}:", ent)
             self.entries[feature] = ent
 
     def make_prediction(self):
@@ -193,12 +242,14 @@ class PredictorApp:
 
         user_inputs = []
         for feature, ent in self.entries.items():
-            raw_val = ent.get().strip()
+            raw_val = ent.text().strip()
             try:
                 user_inputs.append(float(raw_val))
             except ValueError:
-                messagebox.showwarning(
-                    "Invalid Input", f"Please enter a valid number for '{feature}'."
+                QMessageBox.warning(
+                    self,
+                    "Invalid Input",
+                    f"Please enter a valid number for '{feature}'.",
                 )
                 return
 
@@ -208,163 +259,81 @@ class PredictorApp:
             )
             prediction = self.model.predict(raw_machine_settings)
 
-            if isinstance(prediction, (list, tuple, pd.Series)) or (
-                hasattr(prediction, "shape") and prediction > 0
-            ):
-                result = prediction
-            else:
-                result = prediction
-
-            self.lbl_result.config(text=f"Predicted Ra: {result:.4f}")
+            self.lbl_result.setText(f"Predicted Ra: {prediction:.4f}")
 
         except Exception as e:
-            messagebox.showerror("Prediction Error", f"An error occurred:\n{e}")
+            QMessageBox.critical(self, "Prediction Error", f"An error occurred:\n{e}")
 
-    def setup_build_tab(self):
-        csv_frame = ttk.Frame(self.build_frame)
-        csv_frame.pack(fill="x", padx=20, pady=(20, 5))
-
-        self.lbl_csv = ttk.Label(
-            csv_frame, text="No CSV Selected", width=40, anchor="w"
-        )
-        self.lbl_csv.pack(side="left")
-
-        self.btn_csv = ttk.Button(csv_frame, text="Browse CSV", command=self.select_csv)
-        self.btn_csv.pack(side="right")
-        self.csv_path = ""
-
-        type_frame = ttk.Frame(self.build_frame)
-        type_frame.pack(fill="x", padx=20, pady=5)
-
-        ttk.Label(type_frame, text="Dataset Type:").pack(side="left")
-        self.type_combobox = ttk.Combobox(
-            type_frame, state="readonly", values=["dataset1-type", "dataset2-type"]
-        )
-        self.type_combobox.pack(side="right", fill="x", expand=True, padx=(10, 0))
-        self.type_combobox.set("dataset1-type")
-
-        name_frame = ttk.Frame(self.build_frame)
-        name_frame.pack(fill="x", padx=20, pady=5)
-
-        ttk.Label(name_frame, text="Model Name:").pack(side="left")
-        self.ent_model_name = ttk.Entry(name_frame)
-        self.ent_model_name.pack(side="right", fill="x", expand=True, padx=(10, 0))
-        self.ent_model_name.insert(0, "my_new_model")
-
-        self.btn_build = ttk.Button(
-            self.build_frame, text="Start Training", command=self.start_build_thread
-        )
-        self.btn_build.pack(pady=15)
-
-        ttk.Label(self.build_frame, text="Training Output:").pack(anchor="w", padx=20)
-        self.console_text = scrolledtext.ScrolledText(
-            self.build_frame,
-            height=15,
-            bg="black",
-            fg="lightgreen",
-            font=("Liberation Mono", 11),
-        )
-        self.console_text.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+    # --- Builder Logic ---
 
     def select_csv(self):
-        filepath = filedialog.askopenfilename(
-            title="Select Dataset", filetypes=[("CSV Files", "*.csv")]
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Dataset", "", "CSV Files (*.csv)"
         )
         if filepath:
             self.csv_path = filepath
-            filename = os.path.basename(filepath)
-            self.lbl_csv.config(text=filename)
-            self.ent_model_name.delete(0, tk.END)
+            self.lbl_csv.setText(os.path.basename(filepath))
 
-            self.ent_model_name.insert(
-                0, f"{Path(self.csv_path).stem.replace('-', '_')}_model"
-            )
+            auto_name = f"{Path(self.csv_path).stem.replace('-', '_')}_model"
+            self.ent_model_name.setText(auto_name)
+
+    def append_console_text(self, text):
+        self.console_text.moveCursor(QTextCursor.MoveOperation.End)
+        self.console_text.insertPlainText(text)
+        self.console_text.moveCursor(QTextCursor.MoveOperation.End)
 
     def start_build_thread(self):
         if not self.csv_path:
-            messagebox.showwarning("Missing Data", "Please select a CSV file first.")
+            QMessageBox.warning(self, "Missing Data", "Please select a CSV file first.")
             return
 
-        model_name = self.ent_model_name.get().strip()
+        model_name = self.ent_model_name.text().strip()
         if not model_name:
-            messagebox.showwarning(
-                "Missing Name", "Please provide a name for the model."
+            QMessageBox.warning(
+                self, "Missing Name", "Please provide a name for the model."
             )
             return
 
-        dataset_type = self.type_combobox.get()
+        dataset_type = self.type_combobox.currentText()
 
-        self.btn_build.config(state="disabled", text="Training in progress...")
-        self.console_text.delete(1.0, tk.END)
+        self.btn_build.setEnabled(False)
+        self.btn_build.setText("Training in progress...")
+        self.console_text.clear()
 
-        thread = threading.Thread(
-            target=self.run_build_process,
-            args=(self.csv_path, model_name, dataset_type),
-            daemon=True,
+        self.redirector = StreamRedirector()
+        self.redirector.text_written.connect(self.append_console_text)
+
+        self.worker = BuildWorker(
+            self.csv_path, model_name, dataset_type, self.redirector
         )
-        thread.start()
+        self.worker.success.connect(self.on_training_success)
+        self.worker.error.connect(self.on_training_error)
+        self.worker.finished.connect(self.on_training_complete)
 
-    def run_build_process(self, csv_path, model_name, dataset_type):
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
+        self.worker.start()
 
-        redirector = TextRedirector(self.console_queue)
-        sys.stdout = redirector
-        sys.stderr = redirector
-
-        try:
-            build_and_save_model(
-                csv_path=csv_path, model_name=model_name, dataset_type=dataset_type
-            )
-            print("\nTraining Complete!")
-
-            self.latest_model_name = model_name
-            self.console_queue.put("<<TRAINING_SUCCESS>>")
-
-        except Exception as e:
-            print(f"\n❌ ERROR during training:\n{traceback.format_exc()}")
-
-            self.latest_error = str(e)
-            self.console_queue.put("<<TRAINING_ERROR>>")
-
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-            self.console_queue.put("<<TRAINING_COMPLETE>>")
-
-    def show_success_popup(self, event=None):
-        """Triggered by <<TrainingSuccess>>"""
-        messagebox.showinfo(
-            "Success",
-            f"Model '{self.latest_model_name}' trained successfully!",
-            parent=self.root,
+    def on_training_success(self, model_name):
+        QMessageBox.information(
+            self, "Success", f"Model '{model_name}' trained successfully!"
         )
+        if self.current_folder:
+            self.load_pkl_list(self.current_folder)
 
-    def show_error_popup(self, event=None):
-        """Triggered by <<TrainingError>>"""
-        messagebox.showerror(
+    def on_training_error(self, error_msg):
+        QMessageBox.critical(
+            self,
             "Training Error",
-            f"An error occurred while building the model:\n\n{self.latest_error}\n\nCheck the console output for full details.",
-            parent=self.root,
+            f"An error occurred while building the model:\n\n{error_msg}\n\nCheck the console.",
         )
+
+    def on_training_complete(self):
+        self.btn_build.setEnabled(True)
+        self.btn_build.setText("Start Training")
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    root.tk.call("tk", "scaling", 1.4)
-    default_font = font.nametofont("TkDefaultFont")
-    default_font.configure(size=11)
+    app = QApplication(sys.argv)
 
-    text_font = font.nametofont("TkTextFont")
-    text_font.configure(size=11)
-
-    fixed_font = font.nametofont("TkFixedFont")
-    fixed_font.configure(size=11)
-
-    style = ttk.Style(root)
-    if "clam" in style.theme_names():
-        style.theme_use("clam")
-        style.configure(".", font=("DejaVu Sans", 11))
-
-    app = PredictorApp(root)
-    root.mainloop()
+    window = PredictorApp()
+    window.show()
+    sys.exit(app.exec())

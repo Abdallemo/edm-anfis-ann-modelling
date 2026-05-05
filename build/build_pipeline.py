@@ -3,7 +3,9 @@ from typing import Literal, cast
 
 import pandas as pd
 
-from ann import ExperimentRunner, NeuralNetwork, ParamGrid
+from ann import NeuralNetwork
+from ann.experiment import ExperimentRunner
+from ann.types import ParamGrid
 
 DatasetType = Literal["dataset1-type", "dataset2-type"]
 
@@ -34,7 +36,7 @@ def build_and_save_model(csv_path: str, model_name: str, dataset_type: DatasetTy
     if dataset_type == "dataset1-type":
         if not set(FEATURES_TYPE_1).issubset(csv_columns):
             raise ValueError(
-                f"Safety Check Failed! You requested '{dataset_type}', but "
+                f"You requested '{dataset_type}', but "
                 f"the CSV '{csv_path}' is missing required columns: {FEATURES_TYPE_1}"
             )
         feature_cols = FEATURES_TYPE_1
