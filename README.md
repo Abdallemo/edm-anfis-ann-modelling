@@ -51,5 +51,3 @@ Models will automatically apply scaling and polynomial expansions based on their
 ## Acknowledgements
 
 Developed under the academic supervision of Dr. Nurezayana Zainal and Dr. Nur Ariffin ZIN to facilitate ongoing research in EDM optimization.
-
-```
