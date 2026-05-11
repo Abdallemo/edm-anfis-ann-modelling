@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from anfis import AnfisNet
 from ann import NeuralNetwork
 from build.build_pipeline import build_and_save_model
 
@@ -46,11 +47,15 @@ class BuildWorker(QThread):
     success = Signal(str)
     error = Signal(str)
 
-    def __init__(self, csv_path, model_name, dataset_type, redirector):
+    def __init__(
+        self, csv_path, model_name, dataset_type, architecture, device, redirector
+    ):
         super().__init__()
         self.csv_path = csv_path
         self.model_name = model_name
         self.dataset_type = dataset_type
+        self.architecture = architecture
+        self.device = device
         self.redirector = redirector
 
     def run(self):
@@ -65,11 +70,13 @@ class BuildWorker(QThread):
                 csv_path=self.csv_path,
                 model_name=self.model_name,
                 dataset_type=self.dataset_type,
+                architecture=self.architecture,
+                device=self.device,
             )
             print("\nTraining Complete!")
             self.success.emit(self.model_name)
         except Exception as e:
-            print(f"\n❌ ERROR during training:\n{traceback.format_exc()}")
+            print(f"\nERROR during training:\n{traceback.format_exc()}")
             self.error.emit(str(e))
         finally:
             sys.stdout = old_stdout
@@ -80,7 +87,7 @@ class PredictorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Surface Roughness Predictor & Builder")
-        self.resize(650, 700)
+        self.resize(650, 750)
 
         self.model = None
         self.entries = {}
@@ -144,6 +151,28 @@ class PredictorApp(QMainWindow):
         csv_layout.addWidget(self.lbl_csv, stretch=1)
         csv_layout.addWidget(self.btn_csv)
         layout.addLayout(csv_layout)
+
+        arch_layout = QHBoxLayout()
+        arch_layout.addWidget(QLabel("Architecture:"))
+
+        self.arch_combobox = QComboBox()
+        self.arch_combobox.addItems(["ANN", "ANFIS"])
+        self.arch_combobox.currentTextChanged.connect(self.sync_model_name)
+        self.arch_combobox.currentTextChanged.connect(self.device_signal)
+
+        arch_layout.addWidget(self.arch_combobox, stretch=1)
+        layout.addLayout(arch_layout)
+
+        device_layout = QHBoxLayout()
+        device_layout.addWidget(QLabel("Device:"))
+
+        self.device = QComboBox()
+        self.device.addItems(["CPU", "GPU"])
+        self.device.currentTextChanged.connect(self.sync_model_name)
+        device_layout.addWidget(self.device, stretch=1)
+        layout.addLayout(device_layout)
+
+        self.device_signal()
 
         type_layout = QHBoxLayout()
         type_layout.addWidget(QLabel("Dataset Type:"))
@@ -212,13 +241,40 @@ class PredictorApp(QMainWindow):
             return
 
         filepath = os.path.join(self.current_folder, selected_file)
+
         try:
             self.model = NeuralNetwork.load(filepath)
-            self.build_input_fields()
-            self.btn_predict.setEnabled(True)
-            self.lbl_result.setText("")
+        except KeyError:
+            try:
+                self.model = AnfisNet.load(filepath)
+            except Exception as e:
+                QMessageBox.critical(
+                    self, "Error", f"Could not load as ANN or ANFIS:\n{e}"
+                )
+                return
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load the model:\n{e}")
+            return
+
+        self.build_input_fields()
+        self.btn_predict.setEnabled(True)
+        self.lbl_result.setText("")
+
+    def sync_model_name(self, _text: str):
+        if not self.csv_path:
+            return
+
+        auto_name = (
+            f"{Path(self.csv_path).stem.replace('-', '_')}_"
+            f"{self.arch_combobox.currentText()}_{self.device.currentText()}_model"
+        )
+
+        self.ent_model_name.setText(auto_name)
+        self.device_signal()
+
+    def device_signal(self, *_):
+        is_anfis = self.arch_combobox.currentText() == "ANFIS"
+        self.device.setEnabled(is_anfis)
 
     def clear_form_layout(self):
         while self.form_layout.rowCount() > 0:
@@ -274,7 +330,7 @@ class PredictorApp(QMainWindow):
             self.csv_path = filepath
             self.lbl_csv.setText(os.path.basename(filepath))
 
-            auto_name = f"{Path(self.csv_path).stem.replace('-', '_')}_model"
+            auto_name = f"{Path(self.csv_path).stem.replace('-', '_')}_{self.arch_combobox.currentText()}_model"
             self.ent_model_name.setText(auto_name)
 
     def append_console_text(self, text):
@@ -295,6 +351,8 @@ class PredictorApp(QMainWindow):
             return
 
         dataset_type = self.type_combobox.currentText()
+        architecture = self.arch_combobox.currentText()
+        device = self.device.currentText().lower()
 
         self.btn_build.setEnabled(False)
         self.btn_build.setText("Training in progress...")
@@ -304,7 +362,12 @@ class PredictorApp(QMainWindow):
         self.redirector.text_written.connect(self.append_console_text)
 
         self.worker = BuildWorker(
-            self.csv_path, model_name, dataset_type, self.redirector
+            self.csv_path,
+            model_name,
+            dataset_type,
+            architecture,
+            device,
+            self.redirector,
         )
         self.worker.success.connect(self.on_training_success)
         self.worker.error.connect(self.on_training_error)

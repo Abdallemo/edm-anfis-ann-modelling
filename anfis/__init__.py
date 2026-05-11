@@ -1,3 +1,3 @@
-from ._model import FuzzyLogicNetwork
+from ._model import AnfisNet
 
-__all__ = ["FuzzyLogicNetwork"]
+__all__ = ["AnfisNet"]

@@ -32,6 +32,7 @@ class NeuralNetwork:
         activation: ActivationType = "relu",
         max_iter=10000,
         alpha=0.0001,
+        device: str | None = None,
     ) -> None:
         """
         Initializes the model with specific architecture and regularization.
@@ -60,7 +61,7 @@ class NeuralNetwork:
         Automatically executes fit_transform on the internal scaler. If data
         contains NaNs or non-numeric types, a ValueError is raised.
         """
-        #
+
         try:
             self.feature_names = X_train.columns.tolist()
             X_train_scaled = self.scaler.fit_transform(X_train)
