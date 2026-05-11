@@ -3,7 +3,7 @@ from typing import Any, Dict, Literal, cast
 
 import pandas as pd
 
-from anfis._model import AnfisNet
+from anfis import AnfisNet
 from ann import NeuralNetwork
 from experiment import ExperimentRunner
 
@@ -177,8 +177,13 @@ def build_and_save_model(
     y = cast(pd.Series, df[target_col])
 
     if architecture == "ANN":
-        runner = ExperimentRunner(X, y, NeuralNetwork, device)
+        if dataset_type == "dataset1-type":
+            use_polynomial = True
+        else:
+            use_polynomial = False
+        runner = ExperimentRunner(X, y, NeuralNetwork, device, use_polynomial)
         best_params, _ = runner.grid_search(ann_grid, split="loocv")
+
         print(best_params)
 
         if best_params is None:
@@ -197,12 +202,13 @@ def build_and_save_model(
             activation=best_params["activation"],
             alpha=best_params["alpha"],
             device=device,
+            use_polynomial=use_polynomial,
         )
         final_model.fit(X, y)
         final_model.save(f"models/{model_name}.pkl")
 
     elif architecture == "ANFIS":
-        runner = ExperimentRunner(X, y, AnfisNet, device)
+        runner = ExperimentRunner(X, y, AnfisNet, device, False)
         best_params, _ = runner.grid_search(anfis_grid, split="loocv")
         print(best_params)
 

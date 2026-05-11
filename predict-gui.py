@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
 
 from anfis import AnfisNet
 from ann import NeuralNetwork
-from build.build_pipeline import build_and_save_model
+from build import build_and_save_model
 
 
 class StreamRedirector(QObject):

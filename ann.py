@@ -4,9 +4,9 @@ import joblib
 import pandas as pd
 from sklearn.exceptions import NotFittedError
 from sklearn.neural_network import MLPRegressor
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
-from .types import ActivationType, ModelState
+from model_types import ActivationType, ModelState
 
 
 class NeuralNetwork:
@@ -33,6 +33,7 @@ class NeuralNetwork:
         max_iter=10000,
         alpha=0.0001,
         device: str | None = None,
+        use_polynomial: bool = True,
     ) -> None:
         """
         Initializes the model with specific architecture and regularization.
@@ -44,6 +45,10 @@ class NeuralNetwork:
                    noisy experimental data.
         """
         self.scaler = StandardScaler()
+        self.use_polynomial = use_polynomial
+        self.poly = (
+            PolynomialFeatures(degree=2, include_bias=False) if use_polynomial else None
+        )
         self.model = MLPRegressor(
             hidden_layer_sizes=hidden_layers,
             activation=activation,
@@ -64,7 +69,12 @@ class NeuralNetwork:
 
         try:
             self.feature_names = X_train.columns.tolist()
-            X_train_scaled = self.scaler.fit_transform(X_train)
+            X_processed = (
+                self.poly.fit_transform(X_train)
+                if self.use_polynomial
+                else X_train.values
+            )
+            X_train_scaled = self.scaler.fit_transform(X_processed)
             self.model.fit(X_train_scaled, y_train)
         except ValueError as e:
             raise ValueError(
@@ -83,7 +93,10 @@ class NeuralNetwork:
             The predicted Ra value as a float.
         """
         try:
-            x_test_scaled = self.scaler.transform(x_test)
+            x_processed = (
+                self.poly.transform(x_test) if self.use_polynomial else x_test.values
+            )
+            x_test_scaled = self.scaler.transform(x_processed)
             predictions = self.model.predict(x_test_scaled)
 
             return float(predictions[0])
@@ -103,6 +116,8 @@ class NeuralNetwork:
                 "model": self.model,
                 "scaler": self.scaler,
                 "features": getattr(self, "feature_names", []),
+                "poly": getattr(self, "poly", None),
+                "use_polynomial": getattr(self, "use_polynomial", False),
             }
             joblib.dump(state, filepath)
 
@@ -134,6 +149,8 @@ class NeuralNetwork:
             network.model = state["model"]
             network.scaler = state["scaler"]
             network.feature_names = state.get("features", [])
+            network.poly = state.get("poly", None)
+            network.use_polynomial = state.get("use_polynomial", False)
 
             return network
 

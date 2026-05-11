@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from sklearn.exceptions import NotFittedError
-from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.preprocessing import StandardScaler
 
-from .types import ModelState
+from model_types import ModelState
 
 
 class SugenoFuzzyCore(nn.Module):
@@ -118,6 +118,7 @@ class AnfisNet:
         epochs: int = 1000,
         alpha: float = 0.0,
         device: str | None = None,
+        use_polynomial: bool = True,
     ) -> None:
         """
         Initializes the ANFIS wrapper with defined hyperparameters.

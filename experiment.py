@@ -1,6 +1,6 @@
 import itertools
 import os
-from typing import Any, Callable, Dict, Literal, cast
+from typing import Any, Dict, Literal, cast
 
 import matplotlib
 from joblib import Parallel, delayed
@@ -37,6 +37,7 @@ class ExperimentRunner:
         y: pd.Series,
         model_class: ann.NeuralNetwork | anfis.AnfisNet,
         device: str | None = None,
+        use_polynomial: bool = True,
     ):
         """
         Args:
@@ -49,6 +50,7 @@ class ExperimentRunner:
         self.y: pd.Series = y
         self.model_class = model_class
         self.device = device
+        self.use_polynomial = use_polynomial
         self.loo: LeaveOneOut = LeaveOneOut()
 
         self.best_predictions: list[float] = []
@@ -132,7 +134,9 @@ class ExperimentRunner:
                 cast(pd.Series, self.y.iloc[test_idx]),
             )
 
-            model = self.model_class(**params, device=self.device)
+            model = self.model_class(
+                **params, device=self.device, use_polynomial=self.use_polynomial
+            )
             model.fit(X_train, y_train)
 
             prediction = model.predict(X_test)
