@@ -48,14 +48,22 @@ class BuildWorker(QThread):
     error = Signal(str)
 
     def __init__(
-        self, csv_path, model_name, dataset_type, architecture, device, redirector
+        self,
+        csv_path,
+        model_name,
+        dataset_type,
+        architecture,
+        run_on,
+        build_for,
+        redirector,
     ):
         super().__init__()
         self.csv_path = csv_path
         self.model_name = model_name
         self.dataset_type = dataset_type
         self.architecture = architecture
-        self.device = device
+        self.run_on = run_on
+        self.build_for = build_for
         self.redirector = redirector
 
     def run(self):
@@ -71,7 +79,7 @@ class BuildWorker(QThread):
                 model_name=self.model_name,
                 dataset_type=self.dataset_type,
                 architecture=self.architecture,
-                device=self.device,
+                run_on=self.run_on,
             )
             print("\nTraining Complete!")
             self.success.emit(self.model_name)
@@ -163,14 +171,20 @@ class PredictorApp(QMainWindow):
         arch_layout.addWidget(self.arch_combobox, stretch=1)
         layout.addLayout(arch_layout)
 
-        device_layout = QHBoxLayout()
-        device_layout.addWidget(QLabel("Device:"))
+        hardware_layout = QHBoxLayout()
 
-        self.device = QComboBox()
-        self.device.addItems(["CPU", "GPU"])
-        self.device.currentTextChanged.connect(self.sync_model_name)
-        device_layout.addWidget(self.device, stretch=1)
-        layout.addLayout(device_layout)
+        hardware_layout.addWidget(QLabel("Run On:"))
+        self.combo_run_on = QComboBox()
+        self.combo_run_on.addItems(["CPU", "GPU"])
+        self.combo_run_on.currentTextChanged.connect(self.sync_model_name)
+        hardware_layout.addWidget(self.combo_run_on, stretch=1)
+
+        hardware_layout.addWidget(QLabel("Build For:"))
+        self.combo_build_for = QComboBox()
+        self.combo_build_for.addItems(["CPU", "GPU", "Both"])
+        hardware_layout.addWidget(self.combo_build_for, stretch=1)
+
+        layout.addLayout(hardware_layout)
 
         self.device_signal()
 
@@ -266,7 +280,7 @@ class PredictorApp(QMainWindow):
 
         auto_name = (
             f"{Path(self.csv_path).stem.replace('-', '_')}_"
-            f"{self.arch_combobox.currentText()}_{self.device.currentText()}_model"
+            f"{self.arch_combobox.currentText()}_{self.combo_run_on.currentText()}_model"
         )
 
         self.ent_model_name.setText(auto_name)
@@ -274,7 +288,7 @@ class PredictorApp(QMainWindow):
 
     def device_signal(self, *_):
         is_anfis = self.arch_combobox.currentText() == "ANFIS"
-        self.device.setEnabled(is_anfis)
+        self.combo_run_on.setEnabled(is_anfis)
 
     def clear_form_layout(self):
         while self.form_layout.rowCount() > 0:
@@ -352,7 +366,8 @@ class PredictorApp(QMainWindow):
 
         dataset_type = self.type_combobox.currentText()
         architecture = self.arch_combobox.currentText()
-        device = self.device.currentText().lower()
+        run_on = self.combo_run_on.currentText().lower()
+        build_for = self.combo_build_for.currentText().lower()
 
         self.btn_build.setEnabled(False)
         self.btn_build.setText("Training in progress...")
@@ -366,7 +381,8 @@ class PredictorApp(QMainWindow):
             model_name,
             dataset_type,
             architecture,
-            device,
+            run_on,
+            build_for,
             self.redirector,
         )
         self.worker.success.connect(self.on_training_success)

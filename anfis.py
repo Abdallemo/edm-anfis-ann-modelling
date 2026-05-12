@@ -118,7 +118,6 @@ class AnfisNet:
         epochs: int = 1000,
         alpha: float = 0.0,
         device: str | None = None,
-        use_polynomial: bool = True,
     ) -> None:
         """
         Initializes the ANFIS wrapper with defined hyperparameters.
@@ -140,7 +139,7 @@ class AnfisNet:
         else:
             self.device = torch.device("cpu")
 
-    def fit(self, X_train: pd.DataFrame, y_train: pd.Series) -> None:
+    def fit(self, X_train: pd.DataFrame, y_train: pd.Series) -> Self:
         try:
             torch.manual_seed(42)
             if self.device.type == "cuda":
@@ -182,7 +181,7 @@ class AnfisNet:
                     return loss
 
                 optimizer.step(closure)
-
+            return self
         except ValueError as e:
             raise ValueError(
                 f"Training failed due to invalid data format: {e}"

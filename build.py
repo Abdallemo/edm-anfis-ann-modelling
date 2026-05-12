@@ -1,5 +1,5 @@
 # build_pipeline.py
-from typing import Any, Dict, Literal, cast
+from typing import Any, Dict, Literal, Union, cast
 
 import pandas as pd
 
@@ -10,12 +10,22 @@ from experiment import ExperimentRunner
 DatasetType = Literal["dataset1-type", "dataset2-type"]
 ArchitectureType = Literal["ANN", "ANFIS"]
 DeviceType = Literal["cpu", "gpu"]
-
+BuildType = Union[DeviceType | Literal["both"]]
 
 ParamGrid = Dict[str, list[Any]]
 
 GRID_TYPE_1: ParamGrid = {
-    "hidden_layers": [(8, 4), (6, 4), (5, 3), (4, 4)],
+    "hidden_layers": [
+        (8, 4),
+        (6, 4),
+        (5, 3),
+        (4, 4),
+        (3, 2),
+        (1, 4),
+        (4, 1),
+        (8, 8),
+        (5, 5),
+    ],
     "activation": ["logistic", "tanh"],
     "alpha": [
         0.0001,
@@ -58,28 +68,22 @@ GRID_TYPE_1: ParamGrid = {
 
 
 GRID_TYPE_2: ParamGrid = {
-    "hidden_layers": [(5,), (8, 4), (10, 5)],
+    "hidden_layers": [(5,), (8, 4), (10, 5), (4, 4), (5, 1), (5, 5)],
     "activation": ["relu", "logistic", "tanh"],
     "alpha": [0.001, 0.01, 0.1, 0.3, 0.5],
 }
 # old
-ANFIS_GRID_TYPE_1: ParamGrid = {
-    "num_rules": [2, 3, 4, 5],
-    "learning_rate": [0.1, 0.5, 1.0],
-    "epochs": [10, 20],
-    "alpha": [
-        0.6,
-        0.75,
-        0.9,
-    ],
-}
-
 # ANFIS_GRID_TYPE_1: ParamGrid = {
-#     "num_rules": [2],  # Strict limit: 2 rules only to prevent collapse
-#     "learning_rate": [1.0, 1.2, 1.5],  # High speed L-BFGS leaps
-#     "epochs": [10, 20, 30],
-#     "alpha": [0.75, 0.8, 0.85],  # Matching the ANN's winning brakes
+#     "num_rules": [2, 3, 4, 5],
+#     "learning_rate": [0.1, 0.5, 1.0],
+#     "epochs": [10, 20],
+#     "alpha": [
+#         0.6,
+#         0.75,
+#         0.9,
+#     ],
 # }
+
 
 # ANFIS_GRID_TYPE_2: ParamGrid = {
 #     "num_rules": [4, 5, 6],
@@ -91,12 +95,12 @@ ANFIS_GRID_TYPE_1: ParamGrid = {
 #         0.01,
 #     ],
 # }
-# ANFIS_GRID_TYPE_1: ParamGrid = {
-#     "num_rules": [3, 4, 5],
-#     "learning_rate": [0.8, 1.0, 1.2],
-#     "epochs": [20, 30, 40],
-#     "alpha": [0.65, 0.70, 0.75, 0.80],
-# }
+ANFIS_GRID_TYPE_1: ParamGrid = {
+    "num_rules": [2, 3, 4, 5],
+    "learning_rate": [0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0],
+    "epochs": [10, 20, 30, 40, 50, 60],
+    "alpha": [0.5, 0.7, 0.8, 0.9, 0.95, 1.0, 1.2, 1.5, 2.0],
+}
 
 # ANFIS_GRID_TYPE_2: ParamGrid = {
 #     "num_rules": [4, 5, 6, 7],
@@ -104,6 +108,7 @@ ANFIS_GRID_TYPE_1: ParamGrid = {
 #     "epochs": [20, 30, 40],
 #     "alpha": [0.0, 0.001, 0.002, 0.005],
 # }
+
 # ANFIS_GRID_TYPE_2: ParamGrid = {
 #     "num_rules": [2, 3, 4, 5, 6, 7],
 #     "learning_rate": [
@@ -140,7 +145,8 @@ def build_and_save_model(
     model_name: str,
     dataset_type: DatasetType,
     architecture: ArchitectureType = "ANN",
-    device: DeviceType = "cpu",
+    run_on: DeviceType = "cpu",
+    build_for: BuildType = "cpu",
 ):
     print(
         f"\n--- Analyzing and Building {model_name} ({architecture}) as {dataset_type} ---"
@@ -181,7 +187,7 @@ def build_and_save_model(
             use_polynomial = True
         else:
             use_polynomial = False
-        runner = ExperimentRunner(X, y, NeuralNetwork, device, use_polynomial)
+        runner = ExperimentRunner(X, y, NeuralNetwork, run_on, use_polynomial)
         best_params, _ = runner.grid_search(ann_grid, split="loocv")
 
         print(best_params)
@@ -193,22 +199,19 @@ def build_and_save_model(
 
         runner.save_plot(
             f"results/{model_name}_plot.png",
-            title=f"{model_name} (ANN): Actual vs Predicted",
         )
-        runner.save_results_csv(f"results/{model_name}_results.xlsx")
+        runner.save_results_excel(f"results/{model_name}_results.xlsx")
 
-        final_model = NeuralNetwork(
+        NeuralNetwork(
             hidden_layers=best_params["hidden_layers"],
             activation=best_params["activation"],
             alpha=best_params["alpha"],
-            device=device,
+            device=run_on,
             use_polynomial=use_polynomial,
-        )
-        final_model.fit(X, y)
-        final_model.save(f"models/{model_name}.pkl")
+        ).fit(X, y).save(f"models/{model_name}.pkl")
 
     elif architecture == "ANFIS":
-        runner = ExperimentRunner(X, y, AnfisNet, device, False)
+        runner = ExperimentRunner(X, y, AnfisNet, run_on, False)
         best_params, _ = runner.grid_search(anfis_grid, split="loocv")
         print(best_params)
 
@@ -219,18 +222,31 @@ def build_and_save_model(
 
         runner.save_plot(
             f"results/{model_name}_plot.png",
-            title=f"{model_name} (ANFIS): Actual vs Predicted",
         )
-        runner.save_results_csv(f"results/{model_name}_results.xlsx")
+        runner.save_results_excel(f"results/{model_name}_results.xlsx")
 
-        final_model = AnfisNet(
-            num_rules=best_params["num_rules"],
-            learning_rate=best_params["learning_rate"],
-            epochs=best_params["epochs"],
-            device=device,
-        )
-        final_model.fit(X, y)
-        final_model.save(f"models/{model_name}.pkl")
+        if build_for == "both":
+            AnfisNet(
+                num_rules=best_params["num_rules"],
+                learning_rate=best_params["learning_rate"],
+                epochs=best_params["epochs"],
+                device="cpu",
+            ).fit(X, y).save(f"models/{model_name}_BUILD_CPU.pkl")
+
+            AnfisNet(
+                num_rules=best_params["num_rules"],
+                learning_rate=best_params["learning_rate"],
+                epochs=best_params["epochs"],
+                device="cuda",
+            ).fit(X, y).save(f"models/{model_name}_BUILD_GPU.pkl")
+
+        else:
+            AnfisNet(
+                num_rules=best_params["num_rules"],
+                learning_rate=best_params["learning_rate"],
+                epochs=best_params["epochs"],
+                device=run_on,
+            ).fit(X, y).save(f"models/{model_name}.pkl")
 
     else:
         raise ValueError(f"Unrecognized architecture: {architecture}")
