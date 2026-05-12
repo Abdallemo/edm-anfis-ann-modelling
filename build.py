@@ -1,6 +1,7 @@
 # build_pipeline.py
 from typing import Any, Dict, Literal, Union, cast
 
+import joblib
 import pandas as pd
 
 from anfis import AnfisNet
@@ -109,31 +110,31 @@ ANFIS_GRID_TYPE_1: ParamGrid = {
 #     "alpha": [0.0, 0.001, 0.002, 0.005],
 # }
 
-# ANFIS_GRID_TYPE_2: ParamGrid = {
-#     "num_rules": [2, 3, 4, 5, 6, 7],
-#     "learning_rate": [
-#         0.1,
-#         0.2,
-#         0.3,
-#         0.35,
-#         0.4,
-#         0.45,
-#         0.5,
-#         0.55,
-#     ],
-#     "epochs": [30, 40, 45, 60, 75, 80, 90],
-#     "alpha": [0.0, 0.001, 0.002, 0.005],
-# }
-
 ANFIS_GRID_TYPE_2: ParamGrid = {
-    "num_rules": [2, 4, 7],
+    "num_rules": [2, 3, 4, 5, 6, 7],
     "learning_rate": [
         0.1,
+        0.2,
+        0.3,
+        0.35,
+        0.4,
+        0.45,
         0.5,
+        0.55,
     ],
-    "epochs": [30, 40, 80],
-    "alpha": [0.0, 0.005],
+    "epochs": [30, 40, 45, 60, 75, 80, 90],
+    "alpha": [0.0, 0.001, 0.002, 0.005],
 }
+
+# ANFIS_GRID_TYPE_2: ParamGrid = {
+#     "num_rules": [2, 4, 7],
+#     "learning_rate": [
+#         0.1,
+#         0.5,
+#     ],
+#     "epochs": [30, 40, 80],
+#     "alpha": [0.0, 0.005],
+# }
 
 
 FEATURES_TYPE_1 = ["volt", "ip", "ton", "toff"]
@@ -231,14 +232,14 @@ def build_and_save_model(
                 learning_rate=best_params["learning_rate"],
                 epochs=best_params["epochs"],
                 device="cpu",
-            ).fit(X, y).save(f"models/{model_name}_BUILD_CPU.pkl")
+            ).fit(X, y).save(f"models/{model_name}_CPU.pkl")
 
             AnfisNet(
                 num_rules=best_params["num_rules"],
                 learning_rate=best_params["learning_rate"],
                 epochs=best_params["epochs"],
                 device="cuda",
-            ).fit(X, y).save(f"models/{model_name}_BUILD_GPU.pkl")
+            ).fit(X, y).save(f"models/{model_name}_GPU.pkl")
 
         else:
             AnfisNet(
@@ -246,9 +247,60 @@ def build_and_save_model(
                 learning_rate=best_params["learning_rate"],
                 epochs=best_params["epochs"],
                 device=run_on,
-            ).fit(X, y).save(f"models/{model_name}.pkl")
+            ).fit(X, y).save(f"models/{model_name}__{run_on}.pkl")
 
     else:
         raise ValueError(f"Unrecognized architecture: {architecture}")
 
     print(f"Successfully built and saved {model_name}!")
+
+
+def load_and_train(model_path: str, csv_path: str, dataset_type: DatasetType):
+    """
+    Loads an existing model architecture, retrains it on new data,
+    and overwrites the original file.
+    """
+    df = pd.read_csv(csv_path)
+    csv_columns = set(df.columns)
+
+    if dataset_type == "dataset1-type":
+        if not set(FEATURES_TYPE_1).issubset(csv_columns):
+            raise ValueError(
+                f"You requested '{dataset_type}', but "
+                f"the CSV '{csv_path}' is missing required columns: {FEATURES_TYPE_1}"
+            )
+        feature_cols = FEATURES_TYPE_1
+        target_col = "ra"
+
+    elif dataset_type == "dataset2-type":
+        if not set(FEATURES_TYPE_2).issubset(csv_columns):
+            raise ValueError(
+                f"You requested '{dataset_type}', but "
+                f"the CSV '{csv_path}' is missing required columns: {FEATURES_TYPE_2}"
+            )
+        feature_cols = FEATURES_TYPE_2
+        target_col = "surface_roughness"
+
+    else:
+        raise ValueError(f"Unrecognized dataset_type: {dataset_type}")
+
+    raw_state = joblib.load(model_path)
+    engine_name = type(raw_state.get("model")).__name__
+
+    if engine_name == "SugenoFuzzyCore":
+        model = AnfisNet.load(model_path)
+    elif engine_name == "MLPRegressor":
+        model = NeuralNetwork.load(model_path)
+    else:
+        raise ValueError(f"Unrecognized internal engine: {engine_name}")
+
+    missing_cols = set(model.feature_names) - set(feature_cols)
+    if missing_cols:
+        raise ValueError(
+            f"Mismatch between saved model features and new dataset: {missing_cols}"
+        )
+
+    X = cast(pd.DataFrame, df[feature_cols])
+    y = cast(pd.Series, df[target_col])
+
+    model.fit(X, y).save(model_path)

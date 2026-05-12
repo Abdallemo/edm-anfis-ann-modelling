@@ -3,6 +3,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import joblib
 import pandas as pd
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtGui import QFont, QTextCursor
@@ -26,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from anfis import AnfisNet
 from ann import NeuralNetwork
-from build import build_and_save_model
+from build import build_and_save_model, load_and_train
 
 
 class StreamRedirector(QObject):
@@ -49,13 +50,13 @@ class BuildWorker(QThread):
 
     def __init__(
         self,
-        csv_path,
-        model_name,
-        dataset_type,
-        architecture,
-        run_on,
-        build_for,
-        redirector,
+        csv_path: str,
+        model_name: str,
+        dataset_type: str,
+        architecture: str,
+        run_on: str,
+        build_for: str,
+        redirector: StreamRedirector,
     ):
         super().__init__()
         self.csv_path = csv_path
@@ -80,11 +81,52 @@ class BuildWorker(QThread):
                 dataset_type=self.dataset_type,
                 architecture=self.architecture,
                 run_on=self.run_on,
+                build_for=self.build_for,
             )
             print("\nTraining Complete!")
             self.success.emit(self.model_name)
         except Exception as e:
             print(f"\nERROR during training:\n{traceback.format_exc()}")
+            self.error.emit(str(e))
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+
+
+class RetrainWorker(QThread):
+    """Background thread for retraining an existing model."""
+
+    success = Signal(str)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        model_path: str,
+        csv_path: str,
+        mode_dataset_type: str,
+        redirector: StreamRedirector,
+    ):
+        super().__init__()
+        self.model_path = model_path
+        self.csv_path = csv_path
+        self.mode_dataset_type = mode_dataset_type
+        self.redirector = redirector
+
+    def run(self):
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+
+        sys.stdout = self.redirector
+        sys.stderr = self.redirector
+
+        try:
+            print(f"Loading model: {Path(self.model_path).name}")
+            print(f"Loading new data: {Path(self.csv_path).name}")
+            load_and_train(self.model_path, self.csv_path, self.mode_dataset_type)
+            print("\nRetraining Complete! Model overwritten successfully.")
+            self.success.emit(Path(self.model_path).name)
+        except Exception as e:
+            print(f"\nERROR during retraining:\n{traceback.format_exc()}")
             self.error.emit(str(e))
         finally:
             sys.stdout = old_stdout
@@ -102,6 +144,9 @@ class PredictorApp(QMainWindow):
         self.current_folder = ""
         self.csv_path = ""
 
+        self.retrain_model_path = ""
+        self.retrain_csv_path = ""
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -111,6 +156,7 @@ class PredictorApp(QMainWindow):
 
         self.setup_predict_tab()
         self.setup_build_tab()
+        self.setup_retrain_tab()
 
     def setup_predict_tab(self):
         tab = QWidget()
@@ -201,7 +247,7 @@ class PredictorApp(QMainWindow):
         name_layout.addWidget(self.ent_model_name, stretch=1)
         layout.addLayout(name_layout)
 
-        self.btn_build = QPushButton("Start Training")
+        self.btn_build = QPushButton("Start Grid Search & Build")
         self.btn_build.clicked.connect(self.start_build_thread)
         layout.addWidget(self.btn_build)
 
@@ -213,6 +259,48 @@ class PredictorApp(QMainWindow):
         layout.addWidget(self.console_text, stretch=1)
 
         self.tabs.addTab(tab, "Model Builder")
+
+    def setup_retrain_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        model_layout = QHBoxLayout()
+        self.lbl_retrain_model = QLabel("No Model Selected")
+        self.btn_retrain_model = QPushButton("Select Existing Model")
+        self.btn_retrain_model.clicked.connect(self.select_retrain_model)
+        model_layout.addWidget(self.lbl_retrain_model, stretch=1)
+        model_layout.addWidget(self.btn_retrain_model)
+        layout.addLayout(model_layout)
+
+        csv_layout = QHBoxLayout()
+        self.lbl_retrain_csv = QLabel("No New CSV Selected")
+        self.btn_retrain_csv = QPushButton("Select New CSV Data")
+        self.btn_retrain_csv.clicked.connect(self.select_retrain_csv)
+        csv_layout.addWidget(self.lbl_retrain_csv, stretch=1)
+        csv_layout.addWidget(self.btn_retrain_csv)
+        layout.addLayout(csv_layout)
+
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Dataset Type:"))
+        self.model_type_combobox = QComboBox()
+        self.model_type_combobox.addItems(["dataset1-type", "dataset2-type"])
+        type_layout.addWidget(self.model_type_combobox, stretch=1)
+        layout.addLayout(type_layout)
+
+        self.btn_retrain = QPushButton("Retrain and Overwrite")
+        self.btn_retrain.clicked.connect(self.start_retrain_thread)
+        layout.addWidget(self.btn_retrain)
+
+        layout.addWidget(QLabel("Retraining Output:"))
+        self.retrain_console_text = QTextEdit()
+        self.retrain_console_text.setReadOnly(True)
+        self.retrain_console_text.setStyleSheet(
+            "background-color: #1e1e1e; color: #ffaa00;"
+        )
+        self.retrain_console_text.setFont(QFont("Monospace", 10))
+        layout.addWidget(self.retrain_console_text, stretch=1)
+
+        self.tabs.addTab(tab, "Retrainer")
 
     def select_folder(self):
         folder_path = QFileDialog.getExistingDirectory(self, "Select Models Folder")
@@ -230,7 +318,7 @@ class PredictorApp(QMainWindow):
 
     def load_pkl_list(self, folder_path):
         current_selection = self.model_combobox.currentText()
-        pkl_files = [f for f in os.listdir(folder_path) if f.endswith(".pkl")]
+        pkl_files = [f for f in os.listdir(folder_path) if f.endswith((".pkl", ".pt"))]
 
         self.model_combobox.blockSignals(True)
         self.model_combobox.clear()
@@ -257,15 +345,17 @@ class PredictorApp(QMainWindow):
         filepath = os.path.join(self.current_folder, selected_file)
 
         try:
-            self.model = NeuralNetwork.load(filepath)
-        except KeyError:
-            try:
+            raw_state = joblib.load(filepath)
+            engine = raw_state.get("model")
+            engine_name = type(engine).__name__
+
+            if engine_name == "SugenoFuzzyCore":
                 self.model = AnfisNet.load(filepath)
-            except Exception as e:
-                QMessageBox.critical(
-                    self, "Error", f"Could not load as ANN or ANFIS:\n{e}"
-                )
-                return
+            elif engine_name == "MLPRegressor":
+                self.model = NeuralNetwork.load(filepath)
+            else:
+                raise ValueError(f"Unrecognized internal engine: {engine_name}")
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not load the model:\n{e}")
             return
@@ -273,22 +363,6 @@ class PredictorApp(QMainWindow):
         self.build_input_fields()
         self.btn_predict.setEnabled(True)
         self.lbl_result.setText("")
-
-    def sync_model_name(self, _text: str):
-        if not self.csv_path:
-            return
-
-        auto_name = (
-            f"{Path(self.csv_path).stem.replace('-', '_')}_"
-            f"{self.arch_combobox.currentText()}_{self.combo_run_on.currentText()}_model"
-        )
-
-        self.ent_model_name.setText(auto_name)
-        self.device_signal()
-
-    def device_signal(self, *_):
-        is_anfis = self.arch_combobox.currentText() == "ANFIS"
-        self.combo_run_on.setEnabled(is_anfis)
 
     def clear_form_layout(self):
         while self.form_layout.rowCount() > 0:
@@ -329,12 +403,13 @@ class PredictorApp(QMainWindow):
             )
             prediction = self.model.predict(raw_machine_settings)
 
-            self.lbl_result.setText(f"Predicted Ra: {prediction:.4f}")
+            if abs(prediction) < 1e-5:
+                self.lbl_result.setText("Predicted Ra: Out of Bounds")
+            else:
+                self.lbl_result.setText(f"Predicted Ra: {prediction:.4f}")
 
         except Exception as e:
             QMessageBox.critical(self, "Prediction Error", f"An error occurred:\n{e}")
-
-    # --- Builder Logic ---
 
     def select_csv(self):
         filepath, _ = QFileDialog.getOpenFileName(
@@ -346,6 +421,21 @@ class PredictorApp(QMainWindow):
 
             auto_name = f"{Path(self.csv_path).stem.replace('-', '_')}_{self.arch_combobox.currentText()}_model"
             self.ent_model_name.setText(auto_name)
+
+    def sync_model_name(self, _text: str):
+        if not self.csv_path:
+            return
+
+        auto_name = (
+            f"{Path(self.csv_path).stem.replace('-', '_')}_"
+            f"{self.arch_combobox.currentText()}_model"
+        )
+        self.ent_model_name.setText(auto_name)
+        self.device_signal()
+
+    def device_signal(self, *_):
+        is_anfis = self.arch_combobox.currentText() == "ANFIS"
+        self.combo_run_on.setEnabled(is_anfis)
 
     def append_console_text(self, text):
         self.console_text.moveCursor(QTextCursor.MoveOperation.End)
@@ -407,7 +497,78 @@ class PredictorApp(QMainWindow):
 
     def on_training_complete(self):
         self.btn_build.setEnabled(True)
-        self.btn_build.setText("Start Training")
+        self.btn_build.setText("Start Grid Search & Build")
+
+    def select_retrain_model(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Existing Model", "", "Model Files (*.pkl *.pt)"
+        )
+        if filepath:
+            self.retrain_model_path = filepath
+            self.lbl_retrain_model.setText(os.path.basename(filepath))
+
+    def select_retrain_csv(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select New Dataset", "", "CSV Files (*.csv)"
+        )
+        if filepath:
+            self.retrain_csv_path = filepath
+            self.lbl_retrain_csv.setText(os.path.basename(filepath))
+
+    def append_retrain_console_text(self, text):
+        self.retrain_console_text.moveCursor(QTextCursor.MoveOperation.End)
+        self.retrain_console_text.insertPlainText(text)
+        self.retrain_console_text.moveCursor(QTextCursor.MoveOperation.End)
+
+    def start_retrain_thread(self):
+        if not self.retrain_model_path or not self.retrain_csv_path:
+            QMessageBox.warning(self, "Missing Files", "Select both a model and a CSV.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Confirm Overwrite",
+            "This will retrain the model and permanently overwrite the original file. Continue?",
+            QMessageBox.Yes | QMessageBox.No,
+        )
+        if reply == QMessageBox.No:
+            return
+
+        self.btn_retrain.setEnabled(False)
+        self.btn_retrain.setText("Retraining...")
+        self.retrain_console_text.clear()
+
+        self.redirector = StreamRedirector()
+        self.redirector.text_written.connect(self.append_retrain_console_text)
+
+        self.retrain_worker = RetrainWorker(
+            self.retrain_model_path,
+            self.retrain_csv_path,
+            self.model_type_combobox.currentText(),
+            self.redirector,
+        )
+
+        self.retrain_worker.success.connect(self.on_retrain_success)
+        self.retrain_worker.error.connect(self.on_retrain_error)
+        self.retrain_worker.finished.connect(self.on_retrain_complete)
+
+        self.retrain_worker.start()
+
+    def on_retrain_success(self, model_name):
+        QMessageBox.information(
+            self, "Success", f"Model '{model_name}' retrained and overwritten!"
+        )
+
+    def on_retrain_error(self, error_msg):
+        QMessageBox.critical(
+            self,
+            "Retrain Error",
+            f"An error occurred while retraining:\n\n{error_msg}\n\nCheck the console.",
+        )
+
+    def on_retrain_complete(self):
+        self.btn_retrain.setEnabled(True)
+        self.btn_retrain.setText("Retrain and Overwrite")
 
 
 if __name__ == "__main__":
