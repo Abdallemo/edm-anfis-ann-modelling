@@ -13,18 +13,25 @@ from model_types import ModelState
 
 class SugenoFuzzyCore(nn.Module):
     """
-    The internal PyTorch calculus engine representing the 5 layers of a Sugeno ANFIS.
-    Upgraded to use MATLAB's Hybrid Learning Algorithm (LSE + Gradient Descent).
+    A PyTorch module representing a 5-layer Sugeno Adaptive Neuro-Fuzzy Inference System (ANFIS).
+
+    This module implements continuous fuzzy logic through Gaussian membership functions
+    and exact linear consequence evaluation via Least Squares Estimation (LSE).
+
     """
 
     def __init__(self, num_inputs: int, num_rules: int):
+        """
+        Args:
+            num_inputs (int): The number of input features.
+            num_rules (int): The number of fuzzy rules to generate.
+        """
         super().__init__()
         self.num_rules = num_rules
 
         self.bell_centers = nn.Parameter(torch.randn(num_rules, num_inputs))
         self.bell_widths = nn.Parameter(torch.ones(num_rules, num_inputs))
 
-        # requires_grad=False because the optimizer will NEVER touch these.
         self.equation_weights = nn.Parameter(
             torch.randn(num_rules, num_inputs), requires_grad=False
         )
@@ -32,72 +39,193 @@ class SugenoFuzzyCore(nn.Module):
             torch.randn(num_rules, 1), requires_grad=False
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x_expand = x.unsqueeze(1).expand(-1, self.num_rules, -1)
+    def _gaussian_fuzzification(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates the membership degree for each input across all Gaussian bell curves.
 
-        fuzzified = torch.exp(
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, num_inputs).
+
+        Returns:
+            torch.Tensor: Fuzzified tensor of shape (batch_size, num_rules, num_inputs).
+        """
+        x_expand = x.unsqueeze(1).expand(-1, self.num_rules, -1)
+        return torch.exp(
             -0.5
             * torch.pow((x_expand - self.bell_centers) / (self.bell_widths + 1e-8), 2)
         )
-        firing_strength = torch.prod(fuzzified, dim=2)
-        total_strength = torch.sum(firing_strength, dim=1, keepdim=True) + 1e-8
-        normalized_firing = firing_strength / total_strength
 
-        rule_outputs = (
-            torch.matmul(x, self.equation_weights.t()) + self.equation_intercepts.t()
-        )
-        final_prediction = torch.sum(normalized_firing * rule_outputs, dim=1)
-
-        return final_prediction
-
-    def hybrid_lse_update(self, x: torch.Tensor, y: torch.Tensor, alpha: float):
+    def _rule_activation(self, fuzzified_values: torch.Tensor) -> torch.Tensor:
         """
-        Instantly calculates the perfect linear equations for Layer 4
-        using Least Squares Estimation (LSE) with Ridge Regularization.
+        Applies the fuzzy AND logic using the product T-norm to determine rule activation.
+
+        Args:
+            fuzzified_values (torch.Tensor): Tensor of shape (batch_size, num_rules, num_inputs).
+
+        Returns:
+            torch.Tensor: Activation weights of shape (batch_size, num_rules).
+        """
+        return torch.prod(fuzzified_values, dim=2)
+
+    def _normalize_activations(self, activation_weights: torch.Tensor) -> torch.Tensor:
+        """
+        Normalizes activation weights across all rules to sum to 1.0.
+
+        Args:
+            activation_weights (torch.Tensor): Tensor of shape (batch_size, num_rules).
+
+        Returns:
+            torch.Tensor: Normalized weights of shape (batch_size, num_rules).
+        """
+        total_activation = torch.sum(activation_weights, dim=1, keepdim=True) + 1e-8
+        return activation_weights / total_activation
+
+    def _consequent_equations(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Calculates the linear consequent output for each rule.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, num_inputs).
+
+        Returns:
+            torch.Tensor: Linear outputs of shape (batch_size, num_rules).
+        """
+        return torch.matmul(x, self.equation_weights.t()) + self.equation_intercepts.t()
+
+    def _aggregate_output(
+        self, normalized_weights: torch.Tensor, linear_outputs: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Aggregates the final prediction by weighting linear outputs.
+
+        Args:
+            normalized_weights (torch.Tensor): Tensor of shape (batch_size, num_rules).
+            linear_outputs (torch.Tensor): Tensor of shape (batch_size, num_rules).
+
+        Returns:
+            torch.Tensor: Final predicted values of shape (batch_size,).
+        """
+        return torch.sum(normalized_weights * linear_outputs, dim=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Executes the forward pass through the 5-layer ANFIS architecture.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, num_inputs).
+
+        Returns:
+            torch.Tensor: Predicted output tensor of shape (batch_size,).
+        """
+        l1_fuzzified = self._gaussian_fuzzification(x)
+        l2_activations = self._rule_activation(l1_fuzzified)
+        l3_normalized = self._normalize_activations(l2_activations)
+        l4_linear_outs = self._consequent_equations(x)
+
+        return self._aggregate_output(l3_normalized, l4_linear_outs)
+
+    def _init_weighted_inputs(
+        self, x: torch.Tensor, normalized_weights: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Prepares the weighted input design matrix for Least Squares Estimation (LSE).
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, num_inputs).
+            normalized_weights (torch.Tensor): Tensor of shape (batch_size, num_rules).
+
+        Returns:
+            torch.Tensor: Formatted design matrix for the LSE solver.
+        """
+        batch_size, num_inputs = x.shape
+        x_with_bias = torch.cat([x, torch.ones(batch_size, 1, device=x.device)], dim=1)
+
+        weighted_input_matrix = torch.zeros(
+            batch_size, self.num_rules * (num_inputs + 1), device=x.device
+        )
+        for i in range(self.num_rules):
+            start = i * (num_inputs + 1)
+            end = start + (num_inputs + 1)
+            weighted_input_matrix[:, start:end] = (
+                normalized_weights[:, i : i + 1] * x_with_bias
+            )
+
+        return weighted_input_matrix
+
+    def _calculate_weights(
+        self,
+        weighted_input_matrix: torch.Tensor,
+        target_values: torch.Tensor,
+        alpha: float,
+    ) -> torch.Tensor:
+        """
+        Solves the linear system using Ridge Regularization (Tikhonov regularization).
+
+        Args:
+            weighted_input_matrix (torch.Tensor): The design matrix from `_init_weighted_inputs`.
+            target_values (torch.Tensor): Ground truth target tensor of shape (batch_size,).
+            alpha (float): Ridge regularization penalty coefficient.
+
+        Returns:
+            torch.Tensor: Calculated optimal weights for the consequent layer.
+        """
+        transposed_matrix = weighted_input_matrix.t()
+        identity_matrix = torch.eye(
+            weighted_input_matrix.shape[1], device=weighted_input_matrix.device
+        )
+
+        safe_alpha = alpha if alpha > 0 else 1e-4
+
+        left_side = torch.matmul(transposed_matrix, weighted_input_matrix) + (
+            safe_alpha * identity_matrix
+        )
+        right_side = torch.matmul(transposed_matrix, target_values.unsqueeze(1))
+
+        try:
+            calculated_weights = torch.linalg.solve(left_side, right_side)
+        except RuntimeError:
+            calculated_weights = torch.matmul(torch.linalg.pinv(left_side), right_side)
+
+        return calculated_weights
+
+    def _update_equations(self, calculated_weights: torch.Tensor, num_inputs: int):
+        """
+        Updates the internal consequent layer parameters with the exactly calculated weights.
+
+        Args:
+            calculated_weights (torch.Tensor): The optimal weights from the LSE solver.
+            num_inputs (int): The number of input features.
+        """
+        reshaped_weights = calculated_weights.squeeze().view(
+            self.num_rules, num_inputs + 1
+        )
+
+        self.equation_weights.copy_(reshaped_weights[:, :num_inputs])
+        self.equation_intercepts.copy_(reshaped_weights[:, num_inputs : num_inputs + 1])
+
+    def calculate_linear_equations(
+        self, x: torch.Tensor, y: torch.Tensor, alpha: float
+    ):
+        """
+        Computes and applies the optimal parameters for the consequent layer using LSE.
+
+        This method bypasses the standard computational graph to directly solve for
+        the optimal linear weights, stabilizing the hybrid learning process.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, num_inputs).
+            y (torch.Tensor): Ground truth target tensor of shape (batch_size,).
+            alpha (float): Ridge regularization penalty coefficient.
         """
         with torch.no_grad():
-            x_expand = x.unsqueeze(1).expand(-1, self.num_rules, -1)
-            fuzzified = torch.exp(
-                -0.5
-                * torch.pow(
-                    (x_expand - self.bell_centers) / (self.bell_widths + 1e-8), 2
-                )
-            )
-            firing_strength = torch.prod(fuzzified, dim=2)
-            normalized_firing = firing_strength / (
-                torch.sum(firing_strength, dim=1, keepdim=True) + 1e-8
-            )
+            l1_fuzzified = self._gaussian_fuzzification(x)
+            l2_activations = self._rule_activation(l1_fuzzified)
+            l3_normalized = self._normalize_activations(l2_activations)
 
-            batch_size, num_inputs = x.shape
+            weighted_inputs = self._init_weighted_inputs(x, l3_normalized)
+            calculated_weights = self._calculate_weights(weighted_inputs, y, alpha)
 
-            x_with_bias = torch.cat(
-                [x, torch.ones(batch_size, 1, device=x.device)], dim=1
-            )
-
-            A = torch.zeros(
-                batch_size, self.num_rules * (num_inputs + 1), device=x.device
-            )
-            for i in range(self.num_rules):
-                start = i * (num_inputs + 1)
-                end = start + (num_inputs + 1)
-                A[:, start:end] = normalized_firing[:, i : i + 1] * x_with_bias
-
-            #  Weights = (A^T * A + alpha * I)^-1 * A^T * y
-            A_t = A.t()
-            I = torch.eye(A.shape[1], device=x.device)
-            ridge_alpha = alpha if alpha > 0 else 1e-4
-
-            left_side = torch.matmul(A_t, A) + (ridge_alpha * I)
-            right_side = torch.matmul(A_t, y.unsqueeze(1))
-
-            try:
-                solution = torch.linalg.solve(left_side, right_side)
-            except RuntimeError:
-                solution = torch.matmul(torch.linalg.pinv(left_side), right_side)
-
-            solution = solution.squeeze().view(self.num_rules, num_inputs + 1)
-            self.equation_weights.copy_(solution[:, :num_inputs])
-            self.equation_intercepts.copy_(solution[:, num_inputs : num_inputs + 1])
+            self._update_equations(calculated_weights, x.shape[1])
 
 
 class AnfisNet:
@@ -105,7 +233,7 @@ class AnfisNet:
     AnfisNet provides an encapsulated wrapper around a PyTorch-based Sugeno
     Fuzzy Inference System, mirroring the API of the NeuralNetwork class.
 
-    Operational Requirements:
+    Requirements:
     1. Features must be passed as pandas DataFrames.
     2. Model persistence uses joblib to save the scaler, features, and the
        trained PyTorch module state.
@@ -124,7 +252,7 @@ class AnfisNet:
 
         Args:
             num_rules: The number of fuzzy rules/membership functions to generate.
-            learning_rate: The step size for the Adam optimizer.
+            learning_rate: The step size for the LBFGS optimizer.
             epochs: Total number of training iterations.
         """
         self.scaler = StandardScaler()
@@ -172,7 +300,9 @@ class AnfisNet:
                 def closure():
                     optimizer.zero_grad()
 
-                    self.model.hybrid_lse_update(X_tensor, y_tensor, self.alpha)
+                    self.model.calculate_linear_equations(
+                        X_tensor, y_tensor, self.alpha
+                    )
 
                     predictions = self.model(X_tensor)
                     loss = criterion(predictions, y_tensor)
