@@ -171,7 +171,7 @@ class NeuralNetworkNGO:
                 predictions = self.model(X_tensor)
                 criterion = nn.MSELoss()
                 loss = criterion(predictions, y_tensor)
-                l2_reg = sum(torch.norm(p, p=2) for p in self.model.parameters())
+                l2_reg = sum(p.pow(2).sum() for p in self.model.parameters())
                 total_loss = loss + (self.alpha * l2_reg)
                 total_loss.backward()
                 return total_loss
