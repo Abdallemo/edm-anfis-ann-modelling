@@ -56,6 +56,7 @@ class BuildWorker(QThread):
         architecture: str,
         run_on: str,
         build_for: str,
+        is_ngo: bool,
         redirector: StreamRedirector,
     ):
         super().__init__()
@@ -65,6 +66,7 @@ class BuildWorker(QThread):
         self.architecture = architecture
         self.run_on = run_on
         self.build_for = build_for
+        self.is_ngo = is_ngo
         self.redirector = redirector
 
     def run(self):
@@ -82,6 +84,7 @@ class BuildWorker(QThread):
                 architecture=self.architecture,
                 run_on=self.run_on,
                 build_for=self.build_for,
+                is_ngo=self.is_ngo,
             )
             print("\nTraining Complete!")
             self.success.emit(self.model_name)
@@ -213,8 +216,14 @@ class PredictorApp(QMainWindow):
         self.arch_combobox.addItems(["ANN", "ANFIS"])
         self.arch_combobox.currentTextChanged.connect(self.sync_model_name)
         self.arch_combobox.currentTextChanged.connect(self.device_signal)
-
         arch_layout.addWidget(self.arch_combobox, stretch=1)
+
+        arch_layout.addWidget(QLabel("Optimization:"))
+        self.optimization_combobox = QComboBox()
+        self.optimization_combobox.addItems(["Default", "NGO"])
+        self.optimization_combobox.currentTextChanged.connect(self.sync_dataset_type)
+        arch_layout.addWidget(self.optimization_combobox, stretch=1)
+
         layout.addLayout(arch_layout)
 
         hardware_layout = QHBoxLayout()
@@ -238,8 +247,11 @@ class PredictorApp(QMainWindow):
         type_layout.addWidget(QLabel("Dataset Type:"))
         self.type_combobox = QComboBox()
         self.type_combobox.addItems(["dataset1-type", "dataset2-type"])
+        self.type_combobox.currentTextChanged.connect(self.sync_dataset_type)
         type_layout.addWidget(self.type_combobox, stretch=1)
         layout.addLayout(type_layout)
+
+        self.sync_dataset_type()
 
         name_layout = QHBoxLayout()
         name_layout.addWidget(QLabel("Model Name:"))
@@ -437,6 +449,15 @@ class PredictorApp(QMainWindow):
         is_anfis = self.arch_combobox.currentText() == "ANFIS"
         self.combo_run_on.setEnabled(is_anfis)
 
+    def sync_dataset_type(self, *_):
+        is_compatible = self.type_combobox.currentText() == "dataset2-type"
+
+        if is_compatible:
+            self.optimization_combobox.setEnabled(True)
+        else:
+            self.optimization_combobox.setEnabled(False)
+            self.optimization_combobox.setCurrentText("Default")
+
     def append_console_text(self, text):
         self.console_text.moveCursor(QTextCursor.MoveOperation.End)
         self.console_text.insertPlainText(text)
@@ -458,6 +479,7 @@ class PredictorApp(QMainWindow):
         architecture = self.arch_combobox.currentText()
         run_on = self.combo_run_on.currentText().lower()
         build_for = self.combo_build_for.currentText().lower()
+        is_ngo = self.optimization_combobox.currentText() == "NGO"
 
         self.btn_build.setEnabled(False)
         self.btn_build.setText("Training in progress...")
@@ -473,6 +495,7 @@ class PredictorApp(QMainWindow):
             architecture,
             run_on,
             build_for,
+            is_ngo,
             self.redirector,
         )
         self.worker.success.connect(self.on_training_success)

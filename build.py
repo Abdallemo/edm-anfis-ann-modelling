@@ -5,7 +5,9 @@ import joblib
 import pandas as pd
 
 from anfis import AnfisNet
+from anfis_ngo import AnfisNetNGO
 from ann import NeuralNetwork
+from ann_ngo import NeuralNetworkNGO
 from experiment import ExperimentRunner
 
 DatasetType = Literal["dataset1-type", "dataset2-type"]
@@ -148,6 +150,7 @@ def build_and_save_model(
     architecture: ArchitectureType = "ANN",
     run_on: DeviceType = "cpu",
     build_for: BuildType = "cpu",
+    is_ngo=False,
 ):
     print(
         f"\n--- Analyzing and Building {model_name} ({architecture}) as {dataset_type} ---"
@@ -188,7 +191,12 @@ def build_and_save_model(
             use_polynomial = True
         else:
             use_polynomial = False
-        runner = ExperimentRunner(X, y, NeuralNetwork, run_on, use_polynomial)
+
+        if is_ngo:
+            runner = ExperimentRunner(X, y, NeuralNetworkNGO, run_on, use_polynomial)
+        else:
+            runner = ExperimentRunner(X, y, NeuralNetwork, run_on, use_polynomial)
+
         best_params, _ = runner.grid_search(ann_grid, split="loocv")
 
         print(best_params)
@@ -203,16 +211,29 @@ def build_and_save_model(
         )
         runner.save_results_excel(f"results/{model_name}_results.xlsx")
 
-        NeuralNetwork(
-            hidden_layers=best_params["hidden_layers"],
-            activation=best_params["activation"],
-            alpha=best_params["alpha"],
-            device=run_on,
-            use_polynomial=use_polynomial,
-        ).fit(X, y).save(f"models/{model_name}.pkl")
+        if is_ngo:
+            NeuralNetworkNGO(
+                hidden_layers=best_params["hidden_layers"],
+                activation=best_params["activation"],
+                alpha=best_params["alpha"],
+                device=run_on,
+                use_polynomial=use_polynomial,
+            ).fit(X, y).save(f"models/{model_name}_NGO.pkl")
+        else:
+            NeuralNetwork(
+                hidden_layers=best_params["hidden_layers"],
+                activation=best_params["activation"],
+                alpha=best_params["alpha"],
+                device=run_on,
+                use_polynomial=use_polynomial,
+            ).fit(X, y).save(f"models/{model_name}.pkl")
 
     elif architecture == "ANFIS":
-        runner = ExperimentRunner(X, y, AnfisNet, run_on, False)
+        if is_ngo:
+            runner = ExperimentRunner(X, y, AnfisNetNGO, run_on, False)
+        else:
+            runner = ExperimentRunner(X, y, AnfisNet, run_on, False)
+
         best_params, _ = runner.grid_search(anfis_grid, split="loocv")
         print(best_params)
 
@@ -227,27 +248,50 @@ def build_and_save_model(
         runner.save_results_excel(f"results/{model_name}_results.xlsx")
 
         if build_for == "both":
-            AnfisNet(
-                num_rules=best_params["num_rules"],
-                learning_rate=best_params["learning_rate"],
-                epochs=best_params["epochs"],
-                device="cpu",
-            ).fit(X, y).save(f"models/{model_name}_CPU.pkl")
+            if is_ngo:
+                AnfisNetNGO(
+                    num_rules=best_params["num_rules"],
+                    learning_rate=best_params["learning_rate"],
+                    epochs=best_params["epochs"],
+                    device="cpu",
+                ).fit(X, y).save(f"models/{model_name}_CPU_NGO.pkl")
 
-            AnfisNet(
-                num_rules=best_params["num_rules"],
-                learning_rate=best_params["learning_rate"],
-                epochs=best_params["epochs"],
-                device="cuda",
-            ).fit(X, y).save(f"models/{model_name}_GPU.pkl")
+                AnfisNetNGO(
+                    num_rules=best_params["num_rules"],
+                    learning_rate=best_params["learning_rate"],
+                    epochs=best_params["epochs"],
+                    device="cuda",
+                ).fit(X, y).save(f"models/{model_name}_GPU_NGO.pkl")
+            else:
+                AnfisNet(
+                    num_rules=best_params["num_rules"],
+                    learning_rate=best_params["learning_rate"],
+                    epochs=best_params["epochs"],
+                    device="cpu",
+                ).fit(X, y).save(f"models/{model_name}_CPU.pkl")
+
+                AnfisNet(
+                    num_rules=best_params["num_rules"],
+                    learning_rate=best_params["learning_rate"],
+                    epochs=best_params["epochs"],
+                    device="cuda",
+                ).fit(X, y).save(f"models/{model_name}_GPU.pkl")
 
         else:
-            AnfisNet(
-                num_rules=best_params["num_rules"],
-                learning_rate=best_params["learning_rate"],
-                epochs=best_params["epochs"],
-                device=run_on,
-            ).fit(X, y).save(f"models/{model_name}__{run_on}.pkl")
+            if is_ngo:
+                AnfisNetNGO(
+                    num_rules=best_params["num_rules"],
+                    learning_rate=best_params["learning_rate"],
+                    epochs=best_params["epochs"],
+                    device=run_on,
+                ).fit(X, y).save(f"models/{model_name}__{run_on}_NGO.pkl")
+            else:
+                AnfisNet(
+                    num_rules=best_params["num_rules"],
+                    learning_rate=best_params["learning_rate"],
+                    epochs=best_params["epochs"],
+                    device=run_on,
+                ).fit(X, y).save(f"models/{model_name}__{run_on}.pkl")
 
     else:
         raise ValueError(f"Unrecognized architecture: {architecture}")
