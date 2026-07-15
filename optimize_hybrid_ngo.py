@@ -38,7 +38,11 @@ def load_model(model_type: str):
 
 
 def run_ngo_optimization(
-    model, lower: list[float], upper: list[float], epochs=100, pop_size=50
+    model: AnfisNetNGO | NeuralNetworkNGO,
+    lower: list[float],
+    upper: list[float],
+    epochs=100,
+    pop_size=50,
 ):
     """Executes the NGO algorithm to find optimal EDM parameters."""
     print(f"\nRunning Optimization to minimize {TARGET}...")
